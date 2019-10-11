@@ -1,0 +1,8 @@
+repos:
+  serverFunctions:
+    example:
+      sourceURL: https://github.com/bgokden/sless-example.git
+      SubFolder: example
+      Path: /example
+      username: bgokden
+      password: GITHUB_TOKEN
