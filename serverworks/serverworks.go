@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"plugin"
+	"syscall"
 
+	goappenv "github.com/bgokden/go-app-env"
 	git "gopkg.in/src-d/go-git.v4"
 	githttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 )
@@ -28,11 +31,12 @@ type ServerWorksConf struct {
 
 type ServerWorks struct {
 	Conf *ServerWorksConf
-	Mux  *http.ServeMux
 }
 
 var versionEnvVar string
 var IsReady bool
+
+var AppEnv goappenv.GoAppEnv
 
 func ready(w http.ResponseWriter, req *http.Request) {
 	fmt.Fprintf(w, "ready\n")
@@ -53,9 +57,11 @@ func version(w http.ResponseWriter, req *http.Request) {
 	fmt.Fprintf(w, fmt.Sprintf("%v\n", versionEnvVar))
 }
 
-type Server interface {
-	Name() string
-	Serve(http.ResponseWriter, *http.Request)
+func (s *ServerWorks) GetAppEnvByName(name string) goappenv.GoAppEnv {
+	if AppEnv == nil {
+		AppEnv = goappenv.Base()
+	}
+	return AppEnv
 }
 
 func (s *ServerWorks) Load(path, mod string) {
@@ -71,8 +77,8 @@ func (s *ServerWorks) Load(path, mod string) {
 	}
 
 	// 2. look up a symbol (an exported function or variable)
-	// in this case, variable Greeter
-	symServer, err := plug.Lookup("Server")
+	// in this case, variable GoApp
+	symGoApp, err := plug.Lookup("GoApp")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -80,16 +86,16 @@ func (s *ServerWorks) Load(path, mod string) {
 
 	// 3. Assert that loaded symbol is of a desired type
 	// in this case interface type Greeter (defined above)
-	var server Server
-	server, ok := symServer.(Server)
+	var goapp goappenv.GoApp
+	goapp, ok := symGoApp.(goappenv.GoApp)
 	if !ok {
 		fmt.Println("unexpected type from module symbol")
 		os.Exit(1)
 	}
 
 	// 4. use the module
-	fmt.Printf("Handle on path %v %v\n", path, server.Name())
-	s.Mux.HandleFunc(path, server.Serve)
+	fmt.Printf("Handle on path %v %v\n", path, goapp.GetName())
+	goapp.RunWithEnv(s.GetAppEnvByName(goapp.GetName()))
 }
 
 // const TickPeriod = 30 * time.Second
@@ -105,13 +111,13 @@ func (s *ServerWorks) loader() {
 func (s *ServerWorks) RunServe() {
 	IsReady = false
 
-	s.Mux = http.NewServeMux()
+	appEnv := s.GetAppEnvByName("")
 
 	versionEnvVar = os.Getenv("VERSION")
 
-	s.Mux.HandleFunc("/healty", healty)
-	s.Mux.HandleFunc("/ready", ready)
-	s.Mux.HandleFunc("/version", version)
+	appEnv.GetHttpServer().HandleFunc("/healty", healty)
+	appEnv.GetHttpServer().HandleFunc("/ready", ready)
+	appEnv.GetHttpServer().HandleFunc("/version", version)
 
 	if s.Conf != nil {
 		s.loader()
@@ -119,8 +125,10 @@ func (s *ServerWorks) RunServe() {
 
 	IsReady = true
 
-	err := http.ListenAndServe(":8080", s.Mux)
-	log.Fatal(err)
+	sig := make(chan os.Signal)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	signal0 := <-sig
+	fmt.Printf("Signal (%s) received, stopping\n", signal0)
 }
 
 func (s *ServerWorks) CloneBuildLoad(url, folder, username, password, path string) error {
